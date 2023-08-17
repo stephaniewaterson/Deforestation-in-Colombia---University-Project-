@@ -1,0 +1,278 @@
+Map.setCenter(-75.5,10.35,11);
+//create rectangle
+var Cartagena_geom = ee.Geometry.Rectangle(-75.65,10.25,-75.35,10.55);
+Map.addLayer(Cartagena_geom, {}, 'Cartagena_geom');
+//turn into feature with info
+var Cent_Cartagena =geometry2;
+
+var filtered_region = ee.ImageCollection("COPERNICUS/S2")
+.filterBounds(Cartagena_geom)
+.filterDate('2019-09-01', '2019-09-05');
+
+print(filtered_region.size())
+
+var imgList = filtered_region.toList(3);
+print('Firsts image', imgList);
+
+
+var cloudyImage = ee.Image('COPERNICUS/S2/20190904T153621_20190904T153619_T18PVS').select('B2', 'B3', 'B4', 'QA60').rename('B', 'G', 'R', 'QA60');
+
+// vizualise cloudy image
+var trueColour = {bands: ['R', 'G', 'B'],min: 0,max: 3000};
+Map.addLayer(cloudyImage.clip(Cartagena_geom), trueColour, 'True colour cloudy image');
+// cloud masking
+var qa = cloudyImage.select('QA60');
+// Bits 10 and 11 are clouds and cirrus, respectively
+var cloudBitMask = ee.Number(2).pow(10).int();
+var cirrusBitMask = ee.Number(2).pow(11).int();
+// vizualise clouds and cirrus
+var qa = cloudyImage.select('QA60');
+Map.addLayer(qa.bitwiseAnd(cloudBitMask).neq(0).clip(Cartagena_geom), {}, 'clouds');
+Map.addLayer(qa.bitwiseAnd(cirrusBitMask).neq(0).clip(Cartagena_geom), {}, 'cirrus');
+// both flags, clouds and cirrus, should be set to zero, indicating clear conditions
+var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+var cloudyImage_masked = cloudyImage.updateMask(mask);
+Map.addLayer(cloudyImage_masked.clip(Cartagena_geom), trueColour, 'True colour masked cloudy image');
+// functions
+
+// cloud filtering
+
+function maskS2clouds(image) {
+var cloudBitMask = ee.Number(2).pow(10).int();
+var cirrusBitMask = ee.Number(2).pow(11).int();
+var qa = image.select('QA60');
+var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+return image.updateMask(mask);
+}
+//rename bands
+function renameS2bands(image){
+return image.rename('B', 'G', 'R', 'NIR', 'SWIR', 'SWIR2', 'QA60')
+}
+
+// load Sentinel-2 TOA reflectance data.
+
+var s2collection = ee.ImageCollection('COPERNICUS/S2_SR')
+.filterDate('2019-05-01', '2019-08-31')
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+.filterBounds(Cartagena_geom)
+.select('B2', 'B3', 'B4', 'B8', 'B11', 'B12', 'QA60')
+.map(maskS2clouds)
+.map(renameS2bands);
+
+//Reduce the first collection (median reducer in this case)
+var s2_median = s2collection.median()
+//Reduce the first collection (median reducer in this case)
+Map.addLayer(s2_median.clip(Cartagena_geom), {bands: ['R', 'G', 'B'], min: 0, max: 3000, gamma: 50}, 'Sentinel-2 RGB median composite')
+// load the pre-computed Sentinel-2 composite as input
+var input = s2_median;
+// define a region in which to generate a sample of the input
+var region = Cartagena_geom;
+// make the training dataset
+
+var training = input.sample({
+region: region,
+scale: 20,
+numPixels: 40
+});
+// print training (feature collection)
+print(training)
+
+// instantiate the clusterer and train it
+var clusterer = ee.Clusterer.wekaKMeans({nClusters:8, init:1}).train(training); //number of clusters can be changed
+// cluster the input using the trained clusterer
+var result = input.cluster(clusterer);
+// display the clusters with random colors
+Map.addLayer(result.randomVisualizer().clip(Cartagena_geom), {}, 'Clusters');
+var s2_min = s2collection.min()
+
+var s2_max = s2collection.max()
+
+var s2_multiple = s2_median.addBands(s2_min).addBands(s2_max);
+
+Map.addLayer(s2_median.clip(Cartagena_geom), {bands: ['R', 'G', 'B'], min: 0, max: 4000, gamma: 1.5}, 'Sentinel-2 RGB median composite');
+// load the pre-computed Sentinel-2 composite as input
+var input = s2_median;
+// define a region in which to generate a sample of the input
+var region = Cartagena_geom;
+// make the training dataset
+
+var training = input.sample({
+region: region,
+scale: 20,
+numPixels: 40
+});
+// print training (feature collection)
+print(training)
+
+// instantiate the clusterer and train it
+var clusterer = ee.Clusterer.wekaKMeans({nClusters:8, init:1}).train(training); //number of clusters can be changed
+// cluster the input using the trained clusterer
+var result = input.cluster(clusterer);
+// display the clusters with random colors
+Map.addLayer(result.randomVisualizer().clip(Cartagena_geom), {}, 'Clusters');
+var s2_min = s2collection.min()
+
+var s2_max = s2collection.max()
+
+var s2_multiple = s2_median.addBands(s2_min).addBands(s2_max);
+
+// vizualise median-based composite
+Map.addLayer(s2_median.clip(Cartagena_geom), {bands: ['R', 'G', 'B'], min: 0, max: 4000, gamma: 1.5}, 'Sentinel-2 RGB median composite');
+
+// merge training points into a single FeatureCollection
+
+var singlefc = water.merge(urban).merge(greenveg);
+print(singlefc, 'Single training points')
+
+// Select the bands for training and define input data
+
+var bands = ['B', 'G', 'R', 'NIR', 'SWIR', 'SWIR2'];
+var input = s2_median;
+
+// Sample the input imagery to get a FeatureCollection of training/test data.
+
+var samples = input.select(bands).sampleRegions({
+collection: singlefc,
+properties: ['landcover'],
+scale: 20
+});
+
+// data partition
+// add random column
+var ran = samples.randomColumn({columnName:'x',seed:2});
+
+// define split
+
+var split = 0.7; // 70% training, 30% testing.
+// split random column in 2 groups
+var training = ran.filter(ee.Filter.lt('x',split));// for training
+var testing = ran.filter(ee.Filter.gte('x',split));// for accuracy
+
+// training procedure
+
+// Mininum distance classifier using euclidean distance
+
+var md_classifier = ee.Classifier.minimumDistance('mahalanobis').train({
+features: training,
+classProperty: 'landcover',
+inputProperties: bands,
+});
+
+// define a palette for the land cover classification.
+
+var palette = [
+'0e2bff', // water (0) // grey
+'f10000', // builtup (1) // blue
+'0cc449' // greenvegetation (2) // green
+];
+// classify the input imagery.
+var md_classified = input.select(bands).classify(md_classifier);
+// display the classification result and the input image.
+Map.addLayer(md_classified.clip(Cartagena_geom), {min: 0, max: 2, palette: palette}, 'Land Cover Classification - Minimun distance classifier');
+
+// predict over the test set
+
+var test_prediction = testing.classify(md_classifier);
+
+// perfomance metrics - test set
+
+var errorMatrix = test_prediction.errorMatrix('landcover', 'classification');
+var OAV = errorMatrix.accuracy();
+var UAV = errorMatrix.consumersAccuracy();
+var PAV = errorMatrix.producersAccuracy();
+var Kappa = errorMatrix.kappa();
+print('Performance metrics - Minimun distance classifier'); print('Error Matrix:', errorMatrix);
+print('Overall Accuracy:', OAV);
+print('User Accuracy:', UAV);
+print('Producer Accuracy:', PAV);
+print('Kappa Coefficient: ', Kappa);
+
+// Area calculation
+var names = ['water', 'built-up', 'vegetation']
+var count = md_classified.eq([0,1,2]).rename(names);
+var total = count.multiply(ee.Image.pixelArea()).divide(1000*1000);
+var area = total.reduceRegion({
+reducer:ee.Reducer.sum(),
+geometry:Cartagena_geom,
+scale:20,
+maxPixels: 1e11,
+bestEffort:true
+});
+var area_pxa = ee.Number(area)
+print ('Area in km2:', area_pxa)
+
+// Random Forest classifier
+
+var rf_classifier = ee.Classifier.smileRandomForest({numberOfTrees:100}).train({
+features: training,
+classProperty: 'landcover',
+inputProperties: bands
+});
+
+// load Sentinel data for two summer periods
+
+var s2collection_2018 = ee.ImageCollection('COPERNICUS/S2_SR')
+.filterDate('2018-09-01', '2018-12-31')
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+.filterBounds(Cartagena_geom)
+.select('B2', 'B3', 'B4', 'B8', 'B11', 'B12', 'QA60')
+.map(maskS2clouds)
+.map(renameS2bands);
+var s2collection_2022 = ee.ImageCollection('COPERNICUS/S2_SR')
+.filterDate('2019-09-01', '2019-12-31')
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+.filterBounds(Cartagena_geom)
+.select('B2', 'B3', 'B4', 'B8', 'B11', 'B12', 'QA60')
+.map(maskS2clouds)
+.map(renameS2bands);
+
+// get some info on the images being used
+
+var size2021 = s2collection_2018.size();
+
+print('Number of 2021 images: ', size2021);
+
+var size2022 = s2collection_2022.size();
+
+print('Number of 2022 images: ', size2022);
+
+// create median-based composites
+
+var s2_median_2018 = s2collection_2018.median()
+var s2_median_2022 = s2collection_2022.median()
+
+// classify the input imagery according to the trained algorithm
+var md_classified_2018 = s2_median_2018.select(bands).classify(md_classifier);
+var md_classified_2022 = s2_median_2022.select(bands).classify(md_classifier);
+
+// vizualise classified maps
+
+// define a palette for the land cover classification.
+
+var palette = [
+'0e2bff', // water (0) // grey
+'f10000', // builtup (1) // blue
+'0cc449' // greenvegetation (2) // green
+];
+
+// display 2018 and 2019 classification maps
+Map.addLayer(md_classified_2018.clip(Cartagena_geom), {min: 0, max: 2, palette: palette}, '2021 Land Cover Classification');
+Map.addLayer(md_classified_2022.clip(Cartagena_geom), {min: 0, max: 2, palette: palette}, '2022 Land Cover Classification');
+
+// highlight changes
+
+var changeImage = md_classified_2018.multiply(10).add(md_classified_2022).rename('change');
+Map.addLayer(changeImage.randomVisualizer().clip(Cartagena_geom),'','Change detection (multiple classes)')
+
+// remap unchanged areas to 0
+var binaryChange = changeImage.remap([0,11,22],[0,0,0],1);
+// vizualise change/no-change
+Map.addLayer(binaryChange.clip(Cartagena_geom),{min:0,max:1},'Change/No-Change');
+
+// Reclassify classes of the target image for avoiding confusion with the background pixels (set as 0 by default)
+var md_classified_2018_remap = md_classified_2018.remap([0,1,2],[1,2,3],1)
+// export 2021 classifier map
+
+
+
+
